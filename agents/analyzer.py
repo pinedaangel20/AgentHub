@@ -2,10 +2,10 @@
 import json
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import SystemMessage, HumanMessage
-from langfuse.decorators import observe  # <-- Importado correctamente arriba
+from langfuse.decorators import observe
+from langchain.agents import create_tool_calling_agent, AgentExecutor
 
-# Importamos TUS herramientas
+# Importamos TUS herramientas (Asumiendo que ya están hechas en agents/tools.py)
 from agents.tools import (
     calculate_distance, 
     check_impossible_travel, 
@@ -14,7 +14,6 @@ from agents.tools import (
     time_since_last_transaction
 )
 
-# 1. Definimos las herramientas disponibles para este agente
 tools = [
     calculate_distance, 
     check_impossible_travel, 
@@ -23,13 +22,9 @@ tools = [
     time_since_last_transaction
 ]
 
-# 2. Inicializamos el modelo (rápido y barato para usar herramientas)
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
 
-# Vinculamos las herramientas al modelo de forma nativa
-llm_with_tools = llm.bind_tools(tools)
-
-# 3. El System Prompt (CRÍTICO para FinMath)
+# 1. El prompt NECESITA un 'agent_scratchpad' para que el LLM recuerde qué herramientas ya usó
 SYSTEM_PROMPT = """
 You are the strictly mathematical 'Evidence Extractor' agent for a fraud detection system.
 Your ONLY job is to execute the specific analytical tools requested by the Orchestrator, 
@@ -37,51 +32,46 @@ read the mathematical results, and output a raw JSON summary.
 
 RULES:
 1. DO NOT guess or calculate numbers yourself. ALWAYS invoke the provided tools.
-2. If calculating spatial anomalies, you MUST use `calculate_distance` first, then `check_impossible_travel`.
-3. If evaluating amounts, use `calculate_amount_anomaly`. If Z-score > 3.0, flag as highly anomalous.
-4. Your final output MUST be ONLY a valid JSON object. No markdown formatting (```json), no conversational text.
+2. Your final output MUST be ONLY a valid JSON object. No markdown formatting, no conversational text.
 
 Expected Output Format Example:
 {
   "agent_id": "math_extractor_4o_mini",
   "impossible_travel_detected": true,
   "distance_km": 1500.5,
-  "speed_kmh": 1050.0,
-  "amount_z_score": 0.5,
-  "amount_anomaly_flag": false,
-  "recent_transactions_count": 2
+  "amount_anomaly_flag": false
 }
 """
 
-# 4. Añadimos la ID Card de Langfuse para la trazabilidad
+prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT),
+    ("human", "{input}"),
+    # Este placeholder es vital: aquí LangChain insertará los resultados de las tools automáticamente
+    ("placeholder", "{agent_scratchpad}"), 
+])
+
+# 2. Creamos el Agente oficial que sabe manejar "Tool Call IDs"
+agent = create_tool_calling_agent(llm, tools, prompt)
+
+# 3. El Executor es el "While Loop" que corre el código Python por el LLM
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
 @observe(name="Agent_MathExtractor", as_type="generation")
 def extract_evidence(orchestrator_instructions: str, current_transaction: dict) -> dict:
     """
-    Receives instructions from the Orchestrator and the current transaction data,
-    uses the tools to get facts, and returns a JSON dictionary of evidence.
+    Recibe instrucciones, usa las herramientas de Python automáticamente y devuelve el JSON.
     """
-    # Construimos el prompt dinámico
-    user_prompt = f"""
+    user_input = f"""
     Instructions from Orchestrator: {orchestrator_instructions}
-    
-    Current Transaction Data:
-    {json.dumps(current_transaction, indent=2)}
-    
-    Execute the necessary tools and return the JSON Evidence_Summary.
+    Current Transaction Data: {json.dumps(current_transaction, indent=2)}
     """
     
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt)
-    ]
-    
-    # Invocamos al modelo con las herramientas
-    response = llm_with_tools.invoke(messages)
+    # Invocamos al ejecutor, no al LLM directamente
+    response = agent_executor.invoke({"input": user_input})
     
     try:
-        # Limpiamos posibles formatos extraños del LLM
-        clean_json_str = response.content.strip().replace('```json', '').replace('```', '')
+        # La respuesta final en texto estará en la llave "output"
+        clean_json_str = response["output"].strip().replace('```json', '').replace('```', '')
         return json.loads(clean_json_str)
     except json.JSONDecodeError:
-        # Fallback de seguridad si el LLM no responde con JSON puro
-        return {"error": "Failed to parse evidence", "raw_output": response.content}
+        return {"error": "Failed to parse evidence", "raw_output": response.get("output", "")}

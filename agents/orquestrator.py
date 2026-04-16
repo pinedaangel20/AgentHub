@@ -4,6 +4,7 @@ from langfuse.langchain import CallbackHandler
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 import os
+from agents.analyzer import extract_evidence
 
 # Initialize your routing model (using the cheap one for routing to save the $40 budget)
 router_model = ChatOpenAI(
@@ -43,9 +44,26 @@ def run_orchestrator(transaction_data, user_history, session_id):
     route_decision = response.content.strip()
     print(f"Orchestrator decided to: {route_decision}")
     
-    # 3. Logic to actually call the next agents (Waiting on FinMath team to finish the tools)
-    # if route_decision == "ROUTE_TO_GPS":
-    #     return run_extractor_agent(transaction_data, use_gps_tool=True)
-    # ...
-    
-    return False # Placeholder return
+    # 3. Logic to actually call the next agents 
+    if route_decision == "ROUTE_TO_MATH_EXTRACTOR":
+        # 1. Llamamos al extractor (notar los 4 espacios de sangría)
+        evidence_json = extract_evidence(
+            orchestrator_instructions="Analyze distance and amount anomalies.",
+            current_transaction=transaction_data
+        )
+        print(f"Evidencia obtenida: {evidence_json}")
+        
+        # 2. MOCK: Le pasamos la evidencia al Juez (comentado hasta que exista)
+        # is_fraud = make_final_judgment(evidence_json, session_id)
+        # return is_fraud
+        
+        return False  # Temporalmente devolvemos False para que no falle
+
+    elif route_decision == "ROUTE_TO_TEXT_ANALYZER":
+        # Aquí irá la lógica para revisar correos/SMS
+        print("Revisando textos...")
+        return False
+        
+    else:
+        # Si la ruta es 'SAFE' o algo que no entendió, asumimos que no es fraude
+        return False
