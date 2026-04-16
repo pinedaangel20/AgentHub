@@ -18,6 +18,11 @@ SYSTEM_PROMPT = """
 - 21-60: Середній ризик (потребує уваги). -> APPROVE (або BLOCK якщо сума дуже велика)
 - 61-100: Високий ризик (шахрайство). -> BLOCK
 
+CRITICAL RISK MULTIPLIERS (Apply these rules strictly):
+1. IMPOSSIBLE TRAVEL: If evidence shows 'is_physically_possible: false', this is a smoking gun. Immediately score 85+ and return BLOCK.
+2. DEEP SLEEP WINDOW: Look at the timestamp of the transaction. If the local time is between 02:00 AM and 05:00 AM, add +30 to the fraud score (High probability of victim sleeping).
+3. MERCHANT RISK: If the merchant category is High Risk (Crypto, Casino, Jewelry), multiply the risk significance.
+
 Поверни відповідь ТІЛЬКИ у форматі JSON:
 {
   "fraud_score": number,
