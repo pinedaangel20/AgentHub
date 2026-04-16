@@ -13,3 +13,6 @@ __pycache__/
 
 # files from operating system (macOS)
 .DS_Store
+
+# datasets
+./data
