@@ -1,5 +1,5 @@
 # agents/orchestrator.py
-from langfuse.decorators import observe
+from langfuse import observe
 from langfuse.langchain import CallbackHandler
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage

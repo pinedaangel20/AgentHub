@@ -3,7 +3,7 @@ import json
 import os
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langfuse.decorators import observe
+from langfuse import observe
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 
 # Importamos TUS herramientas (Asumiendo que ya están hechas en agents/tools.py)

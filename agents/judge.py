@@ -13,7 +13,7 @@ from typing import Dict, Any
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from langfuse.decorators import observe
+from langfuse import observe
 from langfuse.langchain import CallbackHandler
 
 
