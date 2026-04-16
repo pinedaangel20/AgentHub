@@ -1,42 +1,86 @@
 # agents/tools.py
 from langchain.tools import tool
+import pandas as pd
 import math
 
-# TODO: Implement the Haversine formula to calculate the distance between two coordinates (lat/lon).
-# Remember to consistently return the distance in kilometers or miles.
+# =====================================================================
+# SIMULACIÓN DE DATASTORE EN MEMORIA
+# El Preprocesador (Fase 1) debe poblar este diccionario al inicio.
+# Estructura: {'user_id': DataFrame(columnas: amount, timestamp, etc.)}
+# =====================================================================
+USER_DATA = {} 
+
 @tool
 def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculates the distance in km between two geographic points."""
-    pass
+    """Calculates the great-circle distance in km between two geographic points."""
+    R = 6371.0 
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
-# TODO: Implement logic to check if travel speed is humanly possible.
-# Divide distance (km) by time difference (hours). If > 900 km/h, return True (it's fraud/impossible).
 @tool
 def check_impossible_travel(dist_km: float, time_diff_hours: float) -> bool:
-    """Verifies if the travel between two transactions is physically impossible."""
-    pass
+    """Verifies if the travel between two transactions is physically impossible (> 900 km/h)."""
+    if time_diff_hours <= 0:
+        return True if dist_km > 1.0 else False
+    return (dist_km / time_diff_hours) > 900.0
 
-# TODO: Create a function that takes a user's history and returns how many transactions were made in the last X hours.
 @tool
-def get_transactions_last_n_hours(user_id: str, hours: int) -> int:
-    """Returns the number of recent transactions by a user within a given hour range."""
-    pass
+def calculate_amount_anomaly(user_id: str, current_amount: float, current_timestamp: str) -> float:
+    """
+    Calculates the Z-score of the current transaction amount.
+    Returns how many standard deviations the amount is from the user's historical mean.
+    """
+    df = USER_DATA.get(user_id)
+    if df is None or df.empty:
+        return 0.0
+        
+    current_time = pd.to_datetime(current_timestamp)
+    # Filtrar solo el historial estricto ANTES de esta transacción
+    past_df = df[df['timestamp'] < current_time]
+    
+    if len(past_df) < 2:
+        return 0.0 
 
-# TODO: Create a function to calculate the time elapsed (in minutes) since the user's last transaction.
+    mean_amount = past_df['amount'].mean()
+    std_dev = past_df['amount'].std()
+
+    if std_dev == 0:
+        return 0.0 if current_amount == mean_amount else 99.0 
+
+    return (current_amount - mean_amount) / std_dev
+
+@tool
+def get_transactions_last_n_hours(user_id: str, hours: int, current_timestamp: str) -> int:
+    """Returns the number of recent transactions by a user within a given hour range before the current transaction."""
+    df = USER_DATA.get(user_id)
+    if df is None or df.empty:
+        return 0
+        
+    current_time = pd.to_datetime(current_timestamp)
+    cutoff_time = current_time - pd.Timedelta(hours=hours)
+    
+    # Contar transacciones en la ventana de tiempo estricta
+    recent_tx = df[(df['timestamp'] >= cutoff_time) & (df['timestamp'] < current_time)]
+    return len(recent_tx)
+
 @tool
 def time_since_last_transaction(user_id: str, current_timestamp: str) -> float:
-    """Calculates the minutes since the last purchase."""
-    pass
-
-# TODO: Implement user's average spending calculation (mean).
-# Consider caching this result to avoid iterating through the whole list on every call.
-@tool
-def get_user_average_spending(user_id: str) -> float:
-    """Calculates the historical average spending of the user."""
-    pass
-
-# TODO: Function that compares the current amount vs historical average and returns a multiplier (e.g., 10x larger).
-@tool
-def calculate_amount_anomaly(user_id: str, current_amount: float) -> float:
-    """Returns how unusually large the current amount is compared to the historical average."""
-    pass
+    """Calculates the minutes since the user's last transaction."""
+    df = USER_DATA.get(user_id)
+    if df is None or df.empty:
+        return -1.0 # Indica que no hay historial previo
+        
+    current_time = pd.to_datetime(current_timestamp)
+    past_df = df[df['timestamp'] < current_time]
+    
+    if past_df.empty:
+        return -1.0
+        
+    last_tx_time = past_df['timestamp'].max() # Extrae la fecha más reciente del historial
+    time_diff = current_time - last_tx_time
+    
+    return time_diff.total_seconds() / 60.0 # Retornamos en minutos
