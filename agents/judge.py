@@ -8,9 +8,13 @@ Defines ``judge_transaction(features)`` which:
 """
 
 import json
+import os
 from typing import Dict, Any
 
-import openai
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from langfuse.decorators import observe
+from langfuse.langchain import CallbackHandler
 
 
 # ── System Prompt (XML tags as specified) ─────────────────────────────────────
@@ -58,86 +62,50 @@ You MUST return ONLY a JSON object:
 
 
 # ── Model call ────────────────────────────────────────────────────────────────
-
-def _call_o3_model(messages: list[Dict[str, str]]) -> Dict[str, Any]:
-    """Invoke the o3 model via the OpenAI API and return parsed JSON.
-
-    Parameters
-    ----------
-    messages : list[dict]
-        Chat-format messages (system + user).
-
-    Returns
-    -------
-    dict
-        Parsed JSON payload from the model.
-    """
-    response = openai.ChatCompletion.create(
-        model="o3",
-        messages=messages,
-        temperature=0.2,
-        max_tokens=1024,
-        # reasoning_effort passed as custom header (provider-specific).
-        extra_headers={"X-Reasoning-Effort": "high"},
-    )
-    content: str = response.choices[0].message.content.strip()
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Model returned invalid JSON: {exc}\nRaw content:\n{content}"
-        )
-
+judge_model = ChatOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1",
+    model="openai/o3-mini", # NOTA: OpenRouter usa 'openai/o3-mini' para acceder a o3
+    temperature=0.2,
+    max_tokens=1024,
+    # reasoning_effort is supported in OpenRouter via extra_body
+    model_kwargs={"extra_body": {"reasoning_effort": "high"}}
+)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+@observe(name="Agent_Judge_o3", as_type="generation")
 def judge_transaction(features: Dict[str, Any]) -> Dict[str, Any]:
-    """Send a single transaction to the o3 judge and return the decision.
-
-    Parameters
-    ----------
-    features : dict
-        Transaction-level data including the ``risk_context`` string produced
-        by the preprocessor and any raw attributes the model might need
-        (amount, ip_address, device_id, timestamp, location, etc.).
-
-    Returns
-    -------
-    dict
-        Keys: ``reasoning``, ``risk_score``, ``decision``, ``confidence_level``.
-    """
+    """Send a single transaction to the o3 judge and return the decision."""
+    
     user_msg = json.dumps(features, indent=2, ensure_ascii=False)
+    
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_msg},
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=user_msg)
     ]
 
-    result = _call_o3_model(messages)
+    langfuse_handler = CallbackHandler()
 
-    # Validate required keys.
-    required_keys = {"reasoning", "risk_score", "decision", "confidence_level"}
-    missing = required_keys - result.keys()
-    if missing:
-        raise ValueError(f"Model response missing required keys: {missing}")
+    try:
+        response = judge_model.invoke(
+            messages,
+            config={"callbacks": [langfuse_handler]}
+        )
+        content = response.content.strip()
+        
+        # Parse the JSON response
+        clean_content = content.replace('```json', '').replace('```', '')
+        result = json.loads(clean_content)
+        
+        # Validate required keys
+        required_keys = {"reasoning", "risk_score", "decision", "confidence_level"}
+        missing = required_keys - result.keys()
+        if missing:
+             raise ValueError(f"Model response missing required keys: {missing}")
+             
+        return result
 
-    return result
+    except Exception as exc:
+        raise ValueError(f"Failed to execute Judge model or parse JSON: {exc}")
 
-
-# ── Example usage (remove before production) ──────────────────────────────────
-
-if __name__ == "__main__":
-    sample = {
-        "user_id": 12345,
-        "amount": 750.0,
-        "ip_address": "203.0.113.42",
-        "device_id": "device-abc123",
-        "timestamp": "2023-07-21T14:32:00Z",
-        "location": {"lat": 48.8566, "lon": 2.3522},
-        "risk_context": (
-            "User 12345 | avg=$120.00, std=$45.00, count=27; "
-            "Amt=$750.00, Z=3.20; Vel10m=2, Vel24h=15; dt=45s; "
-            "NEW_DEVICE; Cat=llm_review"
-        ),
-    }
-    decision = judge_transaction(sample)
-    print(json.dumps(decision, indent=2, ensure_ascii=False))
