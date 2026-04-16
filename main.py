@@ -1,128 +1,129 @@
-#main.py
+# main.py
 import os
+import pandas as pd
+import json
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
 import ulid
-from langfuse import Langfuse, observe
-from langfuse.langchain import CallbackHandler
+from langfuse import Langfuse
+
+# 1. Importaciones de módulos
+from utils.preprocessor import preprocess_transactions
+from agents.judge import judge_transaction
+from agents.orquestrator import run_orchestrator
+from utils.output_formatter import generate_submission_file, zip_project_for_submission
+import agents.tools as math_tools
 
 load_dotenv()
 
-# 1. Importaciones de tus compañeros
-from utils.preprocessor import preprocess_transactions
-from agents.judge import judge_transaction
-# 2. Importaciones tuyas
-from agents.orquestrator import run_orchestrator
-from utils.output_formatter import generate_submission_file, zip_project_for_submission
-
-# Cargar variables de entorno
-
-# Inicializar Langfuse
+# Inicializar Langfuse (Asegúrate de que estas keys estén en tu .env)
 langfuse_client = Langfuse(
     public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
     host=os.getenv("LANGFUSE_HOST", "https://challenges.reply.com/langfuse")
 )
 
-def generate_session_id():
-    """Generates a unique session ID as required by the challenge: TEAM-ULID"""
-    team = os.getenv("TEAM_NAME", "default-team").replace(" ", "-")
-    return f"{team}-{ulid.new().str}"
-
-def load_challenge_dataset(filepath="data/Transactions.csv") -> pd.DataFrame:
-    """Carga el dataset. Usaremos datos simulados si el archivo no existe para poder probar."""
+def load_all_datasets():
+    """Carga y cruza los archivos reales desde .data/evaluation/"""
+    print("📂 Accediendo a la base de datos de Reply Mirror (.data/evaluation/)...")
+    base_path = ".data/evaluation/"
+    
+    # --- 1. CARGAR TRANSACCIONES (CSV) ---
+    df_tx = pd.read_csv(os.path.join(base_path, "transactions.csv"))
+    df_tx["timestamp"] = pd.to_datetime(df_tx["timestamp"], utc=True)
+    print(f"✅ Transacciones cargadas: {len(df_tx)}")
+    
+    # --- 2. CARGAR PERFILES DE USUARIO (JSON) ---
     try:
-        df = pd.read_csv(filepath)
-        print(f"LE CHECK: Dataset loaded successfully with {len(df)} rows.")
-        return df
-    except FileNotFoundError:
-        print(f"WARNING: {filepath} not found. Generating mock data for testing.")
-        # Generamos datos falsos con la estructura que necesita preprocessor.py
-        data = {
-            "transaction_id": ["tx-01", "tx-02", "tx-03", "tx-04"],
-            "user_id": [1, 1, 2, 2],
-            "amount": [20.0, 5000.0, 30.0, 5.0],
-            "timestamp": pd.date_range("2023-01-01", periods=4, freq="5min", tz="UTC"),
-            "device_id": ["d1", "d2", "d3", "d3"],
-            "transaction_type": ["e-commerce", "bank transfer", "in-person payment", "e-commerce"],
-        }
-        return pd.DataFrame(data)
+        # pd.read_json maneja automáticamente el parsing de JSON a DataFrame
+        df_users = pd.read_json(os.path.join(base_path, "users.json"))
+        # Poblamos el diccionario de tools.py para que el agente sepa dónde vive cada usuario [cite: 81]
+        math_tools.USER_PROFILES = df_users.set_index("user_id").to_dict(orient="index")
+        print(f"✅ Perfiles de usuario inyectados: {len(df_users)}")
+    except Exception as e:
+        print(f"⚠️ Error cargando users.json: {e}")
+
+    # --- 3. CARGAR COMUNICACIONES (JSON) ---
+    comms_list = []
+    try:
+        with open(os.path.join(base_path, "sms.json"), 'r') as f:
+            sms_data = json.load(f) # Parser estándar de JSON para hilos de texto [cite: 82-84]
+        with open(os.path.join(base_path, "mails.json"), 'r') as f:
+            mail_data = json.load(f) # [cite: 85-86]
+            
+        # Unificamos ambos para el TextAnalyzer
+        comms_list = sms_data + mail_data
+        print(f"✅ Total comunicaciones para análisis: {len(comms_list)}")
+    except Exception as e:
+        print(f"⚠️ Error cargando comunicaciones: {e}")
+
+    return df_tx, comms_list
 
 def main():
-    # 1. Iniciar sesión en Langfuse
-    session_id = generate_session_id()
-    print(f"\nLE CHECK: Starting Evaluation Run | Session ID: {session_id}")
+    # Generamos el ID de sesión oficial para el tablero de jueces
+    team_name = os.getenv("TEAM_NAME", "THE-EYE")
+    session_id = f"{team_name}-{ulid.new().str}"
+    print(f"\n🚀 EJECUCIÓN OFICIAL DEL RETO | Session: {session_id}")
     print("-" * 50)
 
-    # 2. Cargar Dataset Original
-    raw_df = load_challenge_dataset()
+    # 1. Carga masiva de datos reales
+    raw_df, all_comms = load_all_datasets()
     
-    # IMPORTANTE: Poblamos la "base de datos en memoria" de tools.py para que funcione
-    import agents.tools as math_tools
+    # 2. Preparar el historial matemático para las herramientas (Tools)
     math_tools.USER_DATA = dict(tuple(raw_df.groupby('user_id')))
 
-    # 3. Preprocesamiento Determinístico (Filtra la basura, deja lo dudoso)
-    print("LE CHECK: Running Preprocessor...")
+    # 3. Preprocesamiento (Filtro Determinístico para ahorrar tokens)
+    print("⚙️  Ejecutando Triage de alta velocidad...")
     suspect_df = preprocess_transactions(raw_df)
-    
-    suspect_count = len(suspect_df)
-    print(f"LE CHECK: Triage Complete: {suspect_count} transactions flagged for LLM review.")
+    sus_count = len(suspect_df)
+    print(f"🎯 Se detectaron {sus_count} transacciones sospechosas que requieren revisión de agentes.")
     print("-" * 50)
 
     final_fraud_ids = []
 
-    # 4. Bucle Principal de Evaluación
-    # Convertimos el DataFrame a diccionarios para que el LLM lo entienda fácil
-    suspect_transactions = suspect_df.to_dict(orient="records")
+    # 4. Análisis Profundo con Agentes (MAS)
+    for idx, row in suspect_df.iterrows():
+        tx_dict = row.to_dict()
+        user_id = tx_dict['user_id']
+        
+        # Saneamiento de fechas para evitar errores de JSON serializable
+        for k, v in tx_dict.items():
+            if isinstance(v, pd.Timestamp):
+                tx_dict[k] = v.isoformat()
+        
+        # Cruzar con comunicaciones del dataset real
+        # Filtramos solo los mensajes de este usuario específico para no saturar al LLM
+        user_comms = [c for c in all_comms if c.get('user_id') == user_id]
+        tx_dict['recent_communications'] = user_comms[-5:] # Tomamos los últimos 5 mensajes para contexto
 
-    for idx, tx in enumerate(suspect_transactions, 1):
-        print(f"LE CHECK: Analyzing Transaction {idx}/{suspect_count} (User: {tx['user_id']}, Amt: ${tx['amount']:.2f})")
-        
-        # A) EL ORQUESTADOR DECIDE LA RUTA (Y llama a las Tools si es necesario)
-        # Tu orquestador internamente llamará a extract_evidence() si decide que necesita matemáticas
-        evidence_summary = run_orchestrator(
-            transaction_data=tx, 
-            user_history={}, # Ya no lo pasamos así porque tools.py usa USER_DATA globalmente
-            session_id=session_id
-        )
-        
-        # B) EL JUEZ TOMA LA DECISIÓN FINAL BASADA EN COSTO ASIMÉTRICO
-        # Formateamos los "features" (características) exactamente como lo pidió tu compañero
-        judge_features = {
-            "transaction_id": tx.get("transaction_id", "unknown"),
-            "amount": tx["amount"],
-            "risk_context": tx.get("risk_context", "No context"),
-            "evidence_from_tools": evidence_summary # Pasamos lo que el Orquestador/Extractor averiguó
-        }
+        print(f"[{idx+1}/{sus_count}] Investigando ID: {tx_dict['transaction_id']} (Usuario: {user_id})")
         
         try:
-            decision_json = judge_transaction(judge_features)
-            is_fraud = decision_json.get("decision") == "BLOCK"
+            # EL ORQUESTADOR: Activa el MathExtractor y el TextAnalyzer si es necesario
+            evidence = run_orchestrator(tx_dict, {}, session_id)
             
-            print(f"   => Decision: {decision_json['decision']} | Confidence: {decision_json['confidence_level']}")
+            # EL JUEZ: Dicta el veredicto final basado en las reglas del Problem Statement [cite: 48-50]
+            judgment = judge_transaction(evidence)
             
-            if is_fraud:
-                # Guardamos el ID como lo pide el reto
-                final_fraud_ids.append(tx.get("transaction_id", "unknown-tx-id"))
+            if judgment.get("decision") == "BLOCK":
+                print(f"   🚨 FRAUDE DETECTADO: {judgment['reasoning'][:60]}...")
+                final_fraud_ids.append(tx_dict['transaction_id'])
+            else:
+                print(f"   ✅ Transacción Legítima (Score: {judgment['fraud_score']})")
                 
         except Exception as e:
-            print(f"   => ERROR: Error judging transaction: {e}")
-            # Si el modelo falla por límite de cuota o error JSON, asumimos fraude (Costo asimétrico)
-            if tx["amount"] > 1000:
-                 final_fraud_ids.append(tx.get("transaction_id", "unknown-tx-id"))
+            print(f"   ❌ Error crítico en el análisis de esta transacción: {e}")
+            # Estrategia de seguridad: Si el sistema falla, bloqueamos transacciones grandes (>1000)
+            if tx_dict['amount'] > 1000:
+                final_fraud_ids.append(tx_dict['transaction_id'])
 
-    # 5. Asegurar envío de métricas a Langfuse
+    # 5. Generar archivos de entrega oficial [cite: 87-92]
     print("-" * 50)
-    print("LE CHECK: Flushing data to Langfuse...")
-    langfuse_client.flush()
-
-    # 6. Generar Outputs (Output.txt y Submission.zip)
-    print("LE CHECK: Generating submission files...")
-    generate_submission_file(final_fraud_ids, filename="output.txt")
-    zip_project_for_submission(output_zip_name="submission.zip")
+    generate_submission_file(final_fraud_ids, "output.txt")
+    zip_project_for_submission("submission.zip")
     
-    print("\nLE CHECK: Execution complete. Good luck, team!")
+    # Enviar métricas finales a Langfuse
+    langfuse_client.flush()
+    print("\n🏁 PROCESO COMPLETADO. Sube 'output.txt' y 'submission.zip' a la plataforma.")
 
 if __name__ == "__main__":
     main()
