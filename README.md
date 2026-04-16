@@ -75,3 +75,22 @@ To run the agent, simply execute:
 ```bash
 python main.py
 ```
+
+## 🤖 Multi-Agent System (MAS) Architecture
+
+To maximize detection accuracy while strictly managing our API token budget (cost & latency), we implemented a hybrid architecture. It combines deterministic Python rules with a specialized LLM routing system.
+
+### 🕵️‍♂️ Agent Roles
+
+* **Rule-Based Preprocessor (Deterministic):** Not an LLM. A pure Python script that filters out "missing fields" and obviously safe/fraudulent transactions. It saves tokens by ensuring LLMs only process ambiguous cases.
+* **Orchestrator Agent (Claude 3.5 Sonnet):** The system's "Brain". It receives suspect transactions from the preprocessor, analyzes the context, and dictates the investigation plan.
+* **Evidence Extractor Agent (GPT-4o-mini):** The "Investigator". A cost-effective, fast model equipped with deterministic Python tools (Haversine distance, average spending calculators). It gathers mathematical evidence and creates a structured `evidence_summary`.
+* **Fraud Judge Agent (o3 / High-Reasoning Model):** The "Executioner". It reviews the `evidence_summary`. It performs a sanity check based on a confidence threshold and delivers the final binary verdict (`Fraud: True/False`).
+
+### 🌊 Execution Flow
+
+1.  **Data Ingestion & Preprocessing:** `main.py` loads the dataset. `utils/preprocessor.py` cleans it and drops non-suspects.
+2.  **Orchestration:** Suspect transactions are sent to `agents/orchestrator_sonnet.py`.
+3.  **Tool Execution:** The Orchestrator delegates to `agents/extractor_4omini.py`, which triggers functions in `agents/tools.py` to calculate distances, time gaps, and anomalies.
+4.  **Verdict:** The extracted evidence goes to `agents/judge_o3.py` for the final decision.
+5.  **Output Generation:** `utils/output_formatter.py` collects all fraudulent IDs and writes them to the exact `.txt` format required for the evaluation submission, automatically generating the final `.zip` file.

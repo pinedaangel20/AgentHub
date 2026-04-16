@@ -1,29 +1,4 @@
-# main.py
-
-# TODO: Import dotenv and load environment variables (.env).
-# TODO: Import ulid to generate the unique session_id (format: TEAM-ULID without spaces).
-
-# TODO: Create a function to read the dataset (CSV or JSON) using Pandas or the built-in csv library.
-
-# TODO: Create Preprocessing function (group_by_user).
-# Group all dataset transactions by 'user_id' into a dictionary or DataFrame for quick access.
-
-# TODO: Create rule-based filter (rule_based_filter).
-# Before spending tokens, pass all transactions through strict rules (e.g., negative amounts, obvious impossible distances).
-# If it's obvious fraud, flag and save it directly.
-
-# TODO: Main evaluation loop.
-# Iterate over the transactions that passed the initial filter and send them to agents/orchestrator.py.
-
-# TODO: Ensure to use langfuse_client.flush() after calls to not lose monitoring data.
-
-# TODO: Generate the output.txt file.
-# Format the final list of fraudulent transactions exactly as requested in the challenge's "problem statement".
-
-# TODO: (OPTIONAL BUT RECOMMENDED FOR EVALUATION) 
-# Create a small automated script here or a bash file that compresses the whole folder into a .zip 
-# (excluding venv, .env, and pycache) to have it ready for platform upload.
-
+#main.py
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -31,6 +6,12 @@ from langchain_core.messages import HumanMessage
 import ulid
 from langfuse import Langfuse, observe
 from langfuse.langchain import CallbackHandler
+
+from utils.output_formatter import generate_submission_file, zip_project_for_submission
+# TODO: Import Sasha's preprocessor once its finished
+# from utils.preprocessor import ...
+# TODO: Import orchestrator funcs
+# from agents.orchestrator import run_orchestrator
 
 load_dotenv()
 
@@ -69,23 +50,43 @@ def run_llm_call(session_id, model, prompt):
 
 
 def main():
-    questions = [
-        "What is machine learning?",
-        "Explain neural networks briefly.",
-        "What is the difference between AI and ML?"
-    ]
-
     session_id = generate_session_id()
+    print(f"CHECK: Starting run with Session ID: {session_id}")
 
-    for i, question in enumerate(questions, 1):
-        response = run_llm_call(session_id, model, question)
-        print(f"[{i}/{len(questions)}] {question} -> {response[:60]}...")
+    # 1. LOAD AND PREPROCESS DATA (Waiting on FinMath team)
+    # raw_data = load_dataset("data/Transactions.csv")
+    # suspect_transactions, user_history = clean_data(raw_data)
+    
+    # MOCK DATA for testing your loop
+    suspect_transactions = [
+        {"id": "tx-001", "type": "e-commerce", "amount": 5000},
+        {"id": "tx-002", "type": "in-person payment", "amount": 150}
+    ]
+    user_history = {} # Mock history
+    
+    final_fraud_ids = []
 
+    # 2. EVALUATION LOOP
+    print(f"Processing {len(suspect_transactions)} suspect transactions...")
+    for tx in suspect_transactions:
+        # TODO: Call your orchestrator here once it's built
+        # is_fraud = run_orchestrator(tx, user_history, session_id)
+        
+        # MOCK DECISION
+        is_fraud = True if tx["amount"] > 1000 else False 
+        
+        if is_fraud:
+            final_fraud_ids.append(tx["id"])
+
+    # 3. ENSURE LANGFUSE RECEIVES ALL DATA
     langfuse_client.flush()
 
-    print(f"\n{len(questions)} traces sent | session: {session_id}")
-    print("Check the Langfuse dashboard to verify (may take a few minutes to update).")
-
+    # 4. GENERATE OUTPUTS
+    generate_submission_file(final_fraud_ids)
+    zip_project_for_submission()
+    
+    print("\nCHECK: Execution complete. Check Langfuse dashboard.")
 
 if __name__ == "__main__":
     main()
+
