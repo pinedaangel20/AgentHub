@@ -1,0 +1,15 @@
+# virtual environments
+venv/
+env/
+
+# secret
+.env
+
+# files cached by Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# files from operating system (macOS)
+.DS_Store
