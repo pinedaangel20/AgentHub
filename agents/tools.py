@@ -154,3 +154,44 @@ def check_structuring_pattern(user_id: str, current_timestamp: str, current_amou
         "volume_vs_avg_ratio": float(round(ratio, 2)),
         "structuring_risk": "High" if is_suspicious else "Low"
     }
+
+# agents/tools.py (Añadir al final)
+
+# Simulación de base de datos de usuarios (Cargada desde Users.csv en el preprocesador)
+USER_PROFILES = {} 
+
+@tool
+def check_home_distance(user_id: str, current_lat: float, current_lng: float) -> dict:
+    """
+    Compares current transaction location with user's registered home address.
+    """
+    profile = USER_PROFILES.get(user_id)
+    if not profile:
+        return {"at_home": "unknown", "distance_km": -1}
+    
+    # Usamos la herramienta de distancia que ya tienes
+    home_lat = profile.get('home_lat')
+    home_lng = profile.get('home_lng')
+    
+    dist = calculate_distance(current_lat, current_lng, home_lat, home_lng)
+    
+    return {
+        "distance_from_home_km": dist,
+        "is_unusually_far": dist > 100.0 # Más de 100km de casa
+    }
+
+@tool
+def check_iban_history(user_id: str, recipient_iban: str) -> dict:
+    """
+    Verifica si el IBAN destino ya ha sido usado por el usuario antes.
+    """
+    df = USER_DATA.get(user_id)
+    if df is None or df.empty or 'recipient_iban' not in df.columns:
+        return {"new_iban": True, "times_used_before": 0}
+    
+    count = len(df[df['recipient_iban'] == recipient_iban])
+    return {
+        "new_iban": count == 0,
+        "times_used_before": count,
+        "risk": "High" if count == 0 else "Low"
+    }
