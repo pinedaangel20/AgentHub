@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import ulid
 from langfuse import Langfuse
 
+load_dotenv()
+
 # 1. Importaciones de módulos
 from utils.preprocessor import preprocess_transactions
 from agents.judge import judge_transaction
@@ -13,7 +15,6 @@ from agents.orquestrator import run_orchestrator
 from utils.output_formatter import generate_submission_file, zip_project_for_submission
 import agents.tools as math_tools
 
-load_dotenv()
 
 # Inicializar Langfuse (Asegúrate de que estas keys estén en tu .env)
 langfuse_client = Langfuse(
