@@ -52,6 +52,7 @@ def run_e2e_test():
         "transaction_type": ["in-person payment"] * 4
     }
     df_input = pd.DataFrame(data)
+    df_input["timestamp"] = pd.to_datetime(df_input["timestamp"], utc=True)
 
     # ---------------------------------------------------------
     # FASE 2: PREPROCESADOR
