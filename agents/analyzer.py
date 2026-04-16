@@ -1,5 +1,6 @@
 # agents/extractor_4omini.py
 import json
+import os
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langfuse.decorators import observe
@@ -22,7 +23,12 @@ tools = [
     time_since_last_transaction
 ]
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+llm = ChatOpenAI(
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1",
+    model="gpt-4o-mini", 
+    temperature=0.0
+)
 
 # 1. El prompt NECESITA un 'agent_scratchpad' para que el LLM recuerde qué herramientas ya usó
 SYSTEM_PROMPT = """
