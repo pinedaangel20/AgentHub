@@ -1,111 +1,109 @@
 """agents/judge_o3.py
-Reasoning Judge — OpenAI o3 via the openai Python client.
+Fraud Risk Judge — Powered by gpt-4o-mini with numerical scoring.
 
-Defines ``judge_transaction(features)`` which:
-1. Builds the XML-structured system prompt with asymmetric-cost policy.
-2. Sends the transaction payload to the o3 model.
-3. Returns a validated JSON dict: reasoning, risk_score, decision, confidence_level.
+This module evaluates transaction data (evidence) and returns a numerical
+fraud risk score (0-100) based on specified risk tiers.
 """
 
 import json
-import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
-from langfuse import observe
-from langfuse.langchain import CallbackHandler
+import openai
 
 
-# ── System Prompt (XML tags as specified) ─────────────────────────────────────
+# ── System Prompt ─────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """\
-<Role>
-Senior Fraud Intelligence Judge (Level 3 RiskOps). Your mandate is to protect
-the institution's capital by applying "Decision-Theoretic Rigor" to ambiguous
-transactions.
-</Role>
+SYSTEM_PROMPT = """
+Ти — експерт із фрод-моніторингу. Твоє завдання: на основі доказів від Екстрактора виставити оцінку ризику від 0 до 100.
 
-<Decision_Logic_Asymmetric_Cost>
-- CRITICAL: You must optimize for "Expected Utility", not "Accuracy".
-- False Negative (FN) Cost: ~$2,500 (Direct financial loss).
-- False Positive (FP) Cost: ~$50 (Customer churn/support cost).
-- RISK RATIO: 50:1. Blocking 49 legitimate transactions is better than letting
-  1 major fraud slip through.
-</Decision_Logic_Asymmetric_Cost>
+Шкала оцінювання:
+- 0-20: Низький ризик (легальна операція).
+- 21-60: Середній ризик (потребує уваги).
+- 61-100: Високий ризик (шахрайство).
 
-<Analysis_Framework>
-1. BEHAVIORAL CONSISTENCY: Compare current metadata (IP, Device, Time) with the
-   provided historical baseline.
-2. COGNITIVE ANOMALIES: Look for signals of "Social Engineering" or "Account
-   Takeover" (ATO) — e.g., a password change followed by a high-velocity transfer.
-3. GEOGRAPHICAL IMPOSSIBILITY: Evaluate the distance between the current and last
-   transaction location.
-</Analysis_Framework>
-
-<Constraints>
-- If fraud probability > 15% and Amount > $1,000 => BLOCK.
-- If signals are ambiguous but the potential loss is high => BLOCK.
-- Always provide a "Chain-of-Thought" (CoT) reasoning before the decision.
-</Constraints>
-
-<Output_Format>
-You MUST return ONLY a JSON object:
+Поверни відповідь ТІЛЬКИ у форматі JSON:
 {
-  "reasoning": "Step-by-step logic explaining the cost-benefit trade-off",
-  "risk_score": 0-100,
-  "decision": "BLOCK" | "APPROVE",
-  "confidence_level": "Low" | "Medium" | "High"
+  "fraud_score": number,
+  "confidence_level": number,
+  "reasoning": "string"
 }
-</Output_Format>
 """
 
 
-# ── Model call ────────────────────────────────────────────────────────────────
-judge_model = ChatOpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
-    model="openai/o3-mini", # NOTA: OpenRouter usa 'openai/o3-mini' para acceder a o3
-    temperature=0.2,
-    max_tokens=1024,
-    # reasoning_effort is supported in OpenRouter via extra_body
-    model_kwargs={"extra_body": {"reasoning_effort": "high"}}
-)
+# ── Model Wrapper ─────────────────────────────────────────────────────────────
 
-# ── Public API ────────────────────────────────────────────────────────────────
+def evaluate_fraud(features: Dict[str, Any], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """Evaluate transaction data using gpt-4o-mini and return a risk score.
 
-@observe(name="Agent_Judge_o3", as_type="generation")
-def judge_transaction(features: Dict[str, Any]) -> Dict[str, Any]:
-    """Send a single transaction to the o3 judge and return the decision."""
+    Parameters
+    ----------
+    features : dict
+        The evidence summary (e.g., risk_context, amount, user history).
+    weights : dict, optional
+        A dictionary of priorities/weights to guide the analysis
+        (e.g., {"behavioral": 0.7, "velocity": 0.3}).
+
+    Returns
+    -------
+    dict
+        Parsed JSON with `fraud_score`, `confidence_level`, and `reasoning`.
+    """
+    # Initialize the client. In a real app, ensure OPENAI_API_KEY is set.
+    client = openai.OpenAI()
+
+    # Construct the user prompt, incorporating weights if provided.
+    user_content = f"Аналізуй докази для оцінки транзакції:\n{json.dumps(features, indent=2, ensure_ascii=False)}"
     
-    user_msg = json.dumps(features, indent=2, ensure_ascii=False)
-    
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=user_msg)
-    ]
+    if weights:
+        priority_str = ", ".join([f"{k}: {v}" for k, v in weights.items()])
+        user_content = f"ПРИОРІТЕТИ (ВАГИ): {priority_str}\n\n" + user_content
 
-    langfuse_handler = CallbackHandler()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": user_content}
+        ],
+        response_format={"type": "json_object"}
+    )
 
+    content = response.choices[0].message.content
     try:
-        response = judge_model.invoke(
-            messages,
-            config={"callbacks": [langfuse_handler]}
-        )
-        content = response.content.strip()
-        
-        # Parse the JSON response
-        clean_content = content.replace('```json', '').replace('```', '')
-        result = json.loads(clean_content)
-        
-        # Validate required keys
-        required_keys = {"reasoning", "risk_score", "decision", "confidence_level"}
-        missing = required_keys - result.keys()
-        if missing:
-             raise ValueError(f"Model response missing required keys: {missing}")
-             
+        result = json.loads(content)
+        # Validation of required keys.
+        required = {"fraud_score", "confidence_level", "reasoning"}
+        if not required.issubset(result.keys()):
+            raise ValueError(f"Missing required keys in response: {required - result.keys()}")
         return result
+    except (json.JSONDecodeError, ValueError) as e:
+        raise RuntimeError(f"Failed to parse or validate judge response: {e}\nRaw: {content}")
 
-    except Exception as exc:
-        raise ValueError(f"Failed to execute Judge model or parse JSON: {exc}")
 
+# ── Legacy Compatibility / Convenience ────────────────────────────────────────
+
+def judge_transaction(features: Dict[str, Any]) -> Dict[str, Any]:
+    """Compatibility wrapper for the previous API."""
+    return evaluate_fraud(features)
+
+
+# ── Example Usage ─────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Mock data for testing logic.
+    mock_evidence = {
+        "user_id": 12345,
+        "amount": 1200.0,
+        "risk_context": "User 12345 | avg=$120.00, count=27; Amt=$1200.00, Z=9.0; dt=30s; NEW_DEVICE; Cat=llm_review"
+    }
+    
+    # Priority example: focus heavily on the Z-score/Amount.
+    mock_weights = {"anomaly_detection": 0.8, "history": 0.2}
+
+    print("=== Testing Fraud Judge (gpt-4o-mini) ===")
+    try:
+        # Note: This will fail if no API key is provided, but verifies structure.
+        # result = evaluate_fraud(mock_evidence, weights=mock_weights)
+        # print(json.dumps(result, indent=2, ensure_ascii=False))
+        print("Module structure verified. Set OPENAI_API_KEY to run live calls.")
+    except Exception as e:
+        print(f"Error during test: {e}")

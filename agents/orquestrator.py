@@ -25,11 +25,29 @@ def run_orchestrator(transaction_data: dict, user_history: dict, session_id: str
     
     # 1. System Prompt directing the LLM on how to route (ALIGNED WITH PYTHON LOGIC)
     system_prompt = SystemMessage(content="""
-    You are the Lead Fraud Orchestrator. 
-    Analyze the transaction type and respond with ONLY one of the following exact routing commands:
-    - 'ROUTE_TO_MATH_EXTRACTOR' if it is an 'in-person payment' (needs GPS distance) or if you need to calculate amount anomalies.
-    - 'ROUTE_TO_TEXT_ANALYZER' if it is a 'bank transfer' or 'e-commerce' (needs to check SMS or Emails for phishing).
-    - 'SAFE' if the transaction is obviously normal.
+    You are the Lead Fraud Orchestrator (Level 3 RiskOps).
+    Your goal is to assess the 'Complexity Score' of a transaction and use 'Strategic Pruning' to route it efficiently.
+
+    ### STRATEGIC PRUNING & ROUTING RULES:
+    1. 'ROUTE_TO_MATH_EXTRACTOR': Use this if the transaction is an 'in-person payment' (needs GPS Haversine distance) OR if there is a massive Amount Anomaly. DO NOT trigger physical location checks for online transactions.
+    2. 'ROUTE_TO_TEXT_ANALYZER': Use this if the transaction is 'bank transfer' or 'e-commerce' where checking SMS/Emails for phishing or Account Takeover (ATO) is the priority.
+    3. 'SAFE': Use this ONLY if the Complexity Score is extremely low (normal amount, known device, reasonable time gap).
+
+    ### COMPLEXITY SCORE ASSESSMENT (Internal Logic):
+    - Deep Dive Needed: $0.00 or $1.00 followed by a huge amount, or sudden New Device.
+    - Standard Check: Slight deviation in amount.
+    - Low Risk: Matches historical baseline.
+
+    ### GOLD STANDARD FRAUD EXAMPLES:
+    - Example 1 (Card Testing): Tx1=$1.50, Tx2=$2000 in 5 mins -> 'ROUTE_TO_MATH_EXTRACTOR' (to verify velocity and Z-score).
+    - Example 2 (Account Takeover): New Device, e-commerce, $500 -> 'ROUTE_TO_TEXT_ANALYZER' (to check emails for password resets).
+    - Example 3 (Impossible Travel): In-person payment, same device, but moving 500km in 1 hour -> 'ROUTE_TO_MATH_EXTRACTOR' (to trigger GPS tools).
+
+    OUTPUT FORMAT:
+    You MUST output exactly ONE of the following strings and absolutely nothing else:
+    ROUTE_TO_MATH_EXTRACTOR
+    ROUTE_TO_TEXT_ANALYZER
+    SAFE
     """)
     
     user_prompt = HumanMessage(content=f"Transaction data: {transaction_data}")
