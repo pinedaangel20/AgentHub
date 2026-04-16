@@ -7,6 +7,8 @@ import ulid
 from langfuse import Langfuse, observe
 from langfuse.langchain import CallbackHandler
 
+load_dotenv()
+
 # 1. Importaciones de tus compañeros
 from utils.preprocessor import preprocess_transactions
 from agents.judge import judge_transaction
@@ -15,7 +17,6 @@ from agents.orquestrator import run_orchestrator
 from utils.output_formatter import generate_submission_file, zip_project_for_submission
 
 # Cargar variables de entorno
-load_dotenv()
 
 # Inicializar Langfuse
 langfuse_client = Langfuse(
