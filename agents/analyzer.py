@@ -1,30 +1,33 @@
 # agents/extractor_4omini.py
 import json
 import os
+import pandas as pd
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langfuse import observe
 from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
 
-# Importamos TUS herramientas matemáticas
+# 1. IMPORT TOOLS (Including your new structuring tool)
 from agents.tools import (
     calculate_distance, 
     check_impossible_travel, 
     calculate_amount_anomaly, 
     get_transactions_last_n_hours, 
-    time_since_last_transaction
+    time_since_last_transaction,
+    check_structuring_pattern
 )
 
-# 1. Definición de herramientas
+# 2. REGISTER TOOLS
 tools = [
     calculate_distance, 
     check_impossible_travel, 
     calculate_amount_anomaly, 
     get_transactions_last_n_hours, 
-    time_since_last_transaction
+    time_since_last_transaction,
+    check_structuring_pattern
 ]
 
-# 2. Configuración del modelo (Optimizado para Parallel Tool Calling)
+# 3. MODEL CONFIGURATION
 llm = ChatOpenAI(
     api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"),
     base_url="https://openrouter.ai/api/v1" if os.getenv("OPENROUTER_API_KEY") else None,
@@ -32,29 +35,32 @@ llm = ChatOpenAI(
     temperature=0.0
 )
 
-# 3. SYSTEM PROMPT (Versión de Angel + Escapado de llaves {{ }})
+# 4. ADVANCED SYSTEM PROMPT
+# Strategic Directives updated to emphasize 'Memory' and 'Smurfing' patterns.
 SYSTEM_PROMPT = """
-You are the strictly mathematical 'Evidence Extractor' agent for a fraud detection system.
-Your ONLY job is to execute the specific analytical tools requested by the Orchestrator, 
-read the mathematical results, and output a raw JSON summary.
+You are the 'Fraud Pattern Recognition' Expert. Your goal is to detect sophisticated fraud, 
+specifically 'Structuring' (splitting large sums into small transactions).
 
 ### STRATEGIC DIRECTIVES:
-1. PARALLELIZATION: To minimize latency, you MUST call multiple tools simultaneously whenever possible (e.g., trigger distance calculation AND amount anomaly at the exact same time).
-2. IMPOSSIBLE TRAVEL LOGIC: Always evaluate physical distance vs time. If the speed required exceeds 900 km/h (plane speed), explicitly flag "is_physically_possible": false.
-3. MERCHANT CONTEXTUALIZATION: Look at the transaction data. If the merchant relates to "Luxury", "Jewelry", "Casinos", "Crypto", or "Electronics", highlight this as an 'Aggravating Factor'.
+1. MEMORY & STRUCTURING: You MUST invoke the `check_structuring_pattern` tool for every investigation. 
+   This tool checks the 24-hour aggregate volume vs the user's historical average.
+2. PATTERN RECOGNITION: Analyze the results from `get_transactions_last_n_hours`. 
+   If you see 3+ transactions in a very short window (e.g., under 30 mins), flag it as 'High Velocity'.
+3. PHYSICAL LOGIC: If 'time_since_last_transaction' is low but the distance is high, flag 'is_physically_possible': false.
+4. PARALLELIZATION: Trigger distance, anomaly, and structuring checks simultaneously to reduce latency.
 
 RULES:
-1. DO NOT guess or calculate numbers yourself. ALWAYS invoke the provided tools.
-2. Your final output MUST be ONLY a valid JSON object. No markdown formatting, no conversational text.
+1. ALWAYS output a valid JSON object. No conversational filler.
+2. If `structuring_risk` from the tool is "High", you MUST report `structuring_detected`: true.
 
 Expected Output Format Example:
 {{
-  "agent_id": "math_extractor_4o_mini",
+  "agent_id": "pattern_recognition_analyzer",
+  "structuring_detected": true,
+  "volume_vs_avg_ratio": 12.5,
+  "transaction_velocity": "high",
   "is_physically_possible": false,
-  "distance_km": 1500.5,
-  "amount_anomaly_flag": true,
-  "merchant_risk_factor": "High Risk - Crypto Exchange",
-  "summary": "Brief explanation of the extracted evidence."
+  "summary": "User split a large sum into 4 small payments. Total 24h volume is 12x their historical average."
 }}
 """
 
@@ -64,33 +70,39 @@ prompt = ChatPromptTemplate.from_messages([
     ("placeholder", "{agent_scratchpad}"), 
 ])
 
-# 4. Agente y Ejecutor (Verbose=True para que veas la paralelización en consola)
+# 5. AGENT EXECUTOR
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-@observe(name="Agent_MathExtractor", as_type="generation")
+@observe(name="Agent_PatternAnalyzer", as_type="generation")
 def extract_evidence(orchestrator_instructions: str, current_transaction: dict) -> dict:
     """
-    Investiga la transacción usando herramientas y aplica el contexto de riesgo del comercio.
+    Analyzes behavior patterns and memory to detect structuring and anomalies.
     """
+    # We explicitly tell the agent to check the patterns in the user_input
     user_input = f"""
-    Instructions from Orchestrator: {orchestrator_instructions}
-    Current Transaction Data: {json.dumps(current_transaction, indent=2)}
+    Orchestrator Instructions: {orchestrator_instructions}
+    
+    Target Transaction:
+    {json.dumps(current_transaction, indent=2)}
+    
+    Please run a structuring check and velocity analysis for user {current_transaction.get('user_id')}.
     """
     
-    # Invocamos al ejecutor
+    # Simple brackets here (Python dict), not double brackets
     response = agent_executor.invoke({"input": user_input})
     
     try:
         output_text = response["output"].strip()
-        # Limpieza de bloques de código markdown
+        # Clean Markdown formatting if present
         if output_text.startswith("```"):
             output_text = output_text.split("\n", 1)[-1].rsplit("```", 1)[0]
             
         return json.loads(output_text.strip())
     except Exception as e:
+        # Fixed dictionary syntax (single brackets)
         return {
-            "error": "Failed to parse evidence JSON", 
+            "error": "JSON Parsing Error", 
             "details": str(e),
             "raw_output": response.get("output", "")
         }

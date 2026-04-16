@@ -84,3 +84,45 @@ def time_since_last_transaction(user_id: str, current_timestamp: str) -> float:
     time_diff = current_time - last_tx_time
     
     return time_diff.total_seconds() / 60.0 # Retornamos en minutos
+
+@tool
+def check_structuring_pattern(user_id: str, current_timestamp: str, current_amount: float, hours: int = 24) -> dict:
+    """
+    Analyzes 'Smurfing/Structuring' by checking if the aggregate volume in a 
+    sliding window deviates from the user's historical behavior.
+    """
+    df = USER_DATA.get(user_id)
+    if df is None or df.empty:
+        return {"structuring_risk": "Low", "reason": "No historical data"}
+
+    # 1. Ensure datetime alignment
+    df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+    curr_ts = pd.to_datetime(current_timestamp, utc=True)
+    
+    # 2. Define the Window (Memory)
+    # We look at the window PRIOR to the current transaction
+    window_start = curr_ts - pd.Timedelta(hours=hours)
+    recent_window = df[(df['timestamp'] >= window_start) & (df['timestamp'] < curr_ts)]
+    
+    # 3. Calculate Metrics
+    window_count = len(recent_window) + 1 # +1 for the current transaction
+    window_volume = recent_window['amount'].sum() + current_amount
+    
+    # 4. Statistical Logic (Quant Approach)
+    # Instead of $500, we use a multiplier of the historical mean
+    historical_avg_tx = df['amount'].mean()
+    volume_to_avg_ratio = window_volume / historical_avg_tx if historical_avg_tx > 0 else 0
+    
+    # High Risk: 
+    # - More than 3 transactions in the window 
+    # - AND the total volume is > 10x their usual single transaction size
+    is_suspicious = (window_count >= 3) and (volume_to_avg_ratio > 10)
+    
+    return {
+        "analysis_window": f"{hours}h",
+        "tx_count_in_window": int(window_count),
+        "aggregate_volume": float(round(window_volume, 2)),
+        "volume_vs_avg_ratio": float(round(volume_to_avg_ratio, 2)),
+        "structuring_risk": "High" if is_suspicious else "Low",
+        "logic": "Aggregated volume exceeds 10x historical average transaction size with high frequency."
+    }
