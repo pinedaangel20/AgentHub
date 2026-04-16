@@ -4,17 +4,19 @@ import json
 import os
 import ulid
 from dotenv import load_dotenv
+
+# 1. ¡CARGAR LAS VARIABLES DE ENTORNO PRIMERO!
+load_dotenv() 
+
 from langfuse import Langfuse
 
-# Cargar variables de entorno
-load_dotenv()
-
-# Importaciones exactas basadas en tus nombres de archivo
+# 2. AHORA SÍ IMPORTAMOS NUESTRO CÓDIGO LOCAL
 from utils.preprocessor import preprocess_transactions
 import agents.tools as math_tools
 from agents.orquestrator import run_orchestrator
 from agents.judge import judge_transaction
 
+# ... [el resto de tu código de run_e2e_test() sigue igual] ...
 
 def run_e2e_test():
     print("🚀 === INICIANDO PRUEBA END-TO-END (E2E) DEL SISTEMA MAS === 🚀\n")
